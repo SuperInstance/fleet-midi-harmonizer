@@ -1,9 +1,12 @@
 [package]
+rust-version = "1.70"
+readme = "README.md"
 name = "fleet-midi-harmonizer"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/SuperInstance/fleet-midi-harmonizer"
+documentation = "https://docs.rs/fleet-midi-harmonizer"
 description = "Four-part harmony generation from ternary vectors — species counterpoint for agent fleets"
 
 [dependencies]

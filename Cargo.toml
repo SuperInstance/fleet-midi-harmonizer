@@ -1,0 +1,13 @@
+[package]
+name = "fleet-midi-harmonizer"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/SuperInstance/fleet-midi-harmonizer"
+description = "Four-part harmony generation from ternary vectors — species counterpoint for agent fleets"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]

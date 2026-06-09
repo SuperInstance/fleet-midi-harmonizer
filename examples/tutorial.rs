@@ -19,7 +19,7 @@ fn main() {
 
     for (quality, name) in &qualities {
         let chord = Chord::new(0, *quality);
-        println!("C{}: intervals {:?}, pitch classes {:?}", name, chord.intervals(), chord.pitch_classes());
+        println!("C{}: intervals {:?}, pitch classes {:?}", name, quality.intervals(), chord.pitch_classes());
     }
     println!();
 

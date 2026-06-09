@@ -1,101 +1,198 @@
 # fleet-midi-harmonizer
 
-Four-part harmony generation from ternary vectors — species counterpoint for agent fleets.
+**Conservation-governed MIDI harmonization. SATB voice leading meets ternary algebra.**
 
-## The Problem
+Given a melody or chord, this crate generates four-part harmonizations (SATB) that respect counterpoint rules, minimize voice leading distance, and map balanced ternary vectors {-1, 0, +1} to harmonic decisions. The result: harmonizations that sound good because the math guarantees it.
 
-Agent swarms need coordination signals. Most coordination protocols use gossip or consensus on arbitrary state — but what if the coordination signal itself carried *musical structure*? A fleet of agents producing MIDI needs to harmonize: not just agree on a note, but produce four voice parts that obey centuries of voice-leading rules while responding to a shared control signal.
+## The Key Insight
 
-The control signal is ternary: each agent emits a vector of `{-1, 0, +1}` values representing direction (tension, neutrality, resolution). The question: how do you map that to SATB harmony that doesn't sound like garbage?
+Traditional harmony is taught as rules: "no parallel fifths," "resolve the leading tone," "avoid voice crossing." These aren't arbitrary — they're **conservation laws**. Parallel fifths violate conservation of voice-leading distance. Unresolved leading tones violate conservation of tension.
 
-## The Insight
+This crate encodes those rules as a **cost function** that scores every possible chord voicing. The cost function balances:
+- **Voice leading distance** (smooth transitions between chords)
+- **Tension/release** (appropriate harmonic tension for the context)
+- **Ternary alignment** (how well the voicing matches a ternary input vector)
+- **Rule violations** (parallel fifths, octaves, voice crossing — heavily penalized)
 
-Species counterpoint is a constraint satisfaction problem with a natural cost function. The rules are finite and enumerable:
+The optimal harmonization minimizes total cost. It's optimization over a musical constraint space.
 
-- No parallel fifths or octaves between any pair of voices
-- Leading tones (scale degree 7) must resolve upward
-- No voice crossings (soprano ≥ alto ≥ tenor ≥ bass)
-- No augmented intervals (tritones) in melodic motion
-- All voices must stay in their ranges (S: C4–A5, A: G3–D5, T: C3–A4, B: C2–C4)
+## Architecture
 
-Meanwhile, ternary vectors have a natural harmonic interpretation:
-- **Sum > 0** → tension → dominant chords (V, vii°, V7)
-- **Sum < 0** → resolution → tonic chords (I, vi)
-- **Sum = 0** → neutral → predominant chords (IV, ii, iii)
-
-The cost function combines four weighted terms: voice-leading distance, harmonic tension cost, ternary alignment score, and a heavy penalty for rule violations. Picking the best chord from candidates becomes a simple argmin.
-
-## How It Works
-
-1. A ternary vector arrives (e.g., `[1, 0, -1]`, sum = 0, neutral)
-2. The `TernaryToChord` mapper generates diatonic chord candidates based on the vector's sum
-3. Each candidate is voiced around the previous bass note, clamped to SATB ranges
-4. The `CostFunction` evaluates each (chord, voice) pair:
-   - **Voice-leading distance**: total semitone movement from previous voicing (weight: 1.0)
-   - **Tension cost**: penalizes dissonant chords when tension budget is low (weight: 0.5)
-   - **Ternary alignment**: how well the chord matches the vector's intent (weight: 0.8)
-   - **Rule violation penalty**: parallel fifths, unresolved leading tones, etc. (weight: 10.0)
-5. The lowest-cost candidate wins and becomes the next step in the progression
-
-The `CounterpointRules` engine checks all six voice pairs for parallel motion, all four voices for leading tone resolution, and all voices for range and crossing violations.
-
-## Code
-
-```rust
-use fleet_midi_harmonizer::{ChordProgression, HarmonicContext, Mode};
-
-let ctx = HarmonicContext::new(0, Mode::Major).with_tension(0.5);
-
-let prog = ChordProgression::generate(ctx, &[
-    vec![-1, -1,  0],  // → I (resolution)
-    vec![ 0,  0,  0],  // → IV (predominant)
-    vec![ 1,  1,  0],  // → V7 (tension)
-    vec![-1, -1, -1],  // → I (resolution)
-]);
-
-for step in &prog.steps {
-    println!("{} {} cost={:.2}", step.chord, step.voice, step.cost);
-}
-// Cmaj S=72 A=64 T=55 B=48 cost=0.56
-// Fmaj S=72 A=65 T=57 B=53 cost=3.12
-// G7  S=74 A=67 T=55 B=43 cost=5.84
-// Cmaj S=72 A=64 T=55 B=48 cost=4.30
-
-let violations = prog.validate();
-let analysis = prog.roman_analysis();
+```
+fleet-midi-harmonizer
+├── src/
+│   ├── harmony.rs      # Chord, ChordQuality, Mode, HarmonicContext
+│   ├── voice.rs        # SATB voicing, voice ranges, interval calculations
+│   ├── rules.rs        # CounterpointRules: parallel 5ths/8ves, crossing, spacing
+│   ├── ternary.rs      # TernaryVector → chord candidate mapping
+│   ├── cost.rs         # CostFunction: weighted scoring of voicing candidates
+│   └── progression.rs  # ChordProgression: sequence of steps with cost tracking
+├── examples/
+│   └── basic.rs
+└── Cargo.toml
 ```
 
-## Module Map
+### Data Flow
 
-| Module | Responsibility | Key Types |
-|---|---|---|
-| `harmony` | Chord theory, key/mode, tension budget | `Chord`, `ChordQuality`, `HarmonicContext`, `Mode` |
-| `voice` | SATB voice ranges, crossing detection, distance | `Voice`, range constants |
-| `rules` | Counterpoint constraint engine | `CounterpointRules`, `RuleViolation` enum |
-| `ternary` | `{-1,0,+1}` → chord candidates, alignment scoring | `TernaryToChord`, `TernaryVector` |
-| `cost` | Weighted cost function for candidate selection | `CostFunction` |
-| `progression` | Multi-step chord progression with voice leading | `ChordProgression`, `ProgressionStep` |
+```
+Ternary Vector {-1, 0, +1}
+        │
+        ▼
+   TernaryToChord ──────► Chord Candidates
+        │                        │
+        │                        ▼
+        │              CounterpointRules ──► Valid voicings
+        │                        │
+        │                        ▼
+        └──────────────── CostFunction ──► Best voicing (min cost)
+                                         │
+                                         ▼
+                                  ProgressionStep
+                                  (Chord + Voice + Cost)
+```
 
-## Design Decisions
+## Quick Start
 
-**Why diatonic-only candidates?** Chromatic chords (borrowed chords, secondary dominants) would expand the search space dramatically with marginal benefit for agent fleet coordination. The diatonic constraint keeps the system predictable and controllable. You can always extend `chord_candidates()` with your own mapping.
+```rust
+use fleet_midi_harmonizer::*;
+use fleet_midi_harmonizer::ternary::TernaryVector;
 
-**Why species counterpoint rules and not jazz voice leading?** The rules here are stricter than jazz voicing (which allows parallel seconds, tritone substitution, etc.) because the output is meant to be *structurally correct* — a foundation. Relax constraints by reducing `rule_violation_penalty` in the cost function.
+// Set up harmonic context: C major
+let ctx = HarmonicContext::new(0, Mode::Major); // 0 = C
 
-**Why tension budget as a float?** A binary tension/no-tension flag loses information. A float lets you smoothly transition between passages — opening movements (low tension), development (high tension), recapitulation (low again). The `HarmonicContext` carries this through the entire progression.
+// Create a ternary input vector
+let ternary: TernaryVector = vec![1, 0, -1, 0]; // direction: up, neutral, down, neutral
 
-**Why 6 voice pairs for parallel checks?** SATB has 4 voices and C(4,2) = 6 pairs: soprano-bass, soprano-tenor, soprano-alto, alto-tenor, alto-bass, tenor-bass. Parallel fifths/octaves between *any* pair is forbidden — not just outer voices.
+// Map ternary to chord candidates
+let mapper = TernaryToChord::new(ctx);
+let candidates = mapper.generate_candidates(&ternary);
+println!("{} chord candidates from ternary {:?}", candidates.len(), ternary);
 
-**Why ternary vectors of length 3?** The three dimensions encode [tension, color, bass_motion]. This gives enough expressiveness (27 possible vectors) without overwhelming the candidate space. Longer vectors work too — the alignment scoring scales with length.
+// Score each candidate with cost function
+let cost_fn = CostFunction::default();
+for chord in &candidates {
+    let cost = cost_fn.evaluate(chord, &ctx, &ternary);
+    println!("  {} → cost = {:.2}", chord, cost);
+}
+```
 
-**No-std compatible?** The crate uses only `serde`, `thiserror`, and core `std` formatting. No I/O, no MIDI output, no filesystem. It's a pure computation library that produces `(Chord, Voice)` pairs — rendering to MIDI bytes is your responsibility.
+## Tutorial: Building a Chord Progression
 
-## Stats
+```rust
+use fleet_midi_harmonizer::*;
+use fleet_midi_harmonizer::ternary::TernaryVector;
+use fleet_midi_harmonizer::progression::ChordProgression;
 
-- 73 tests, all passing
-- Pure Rust, zero unsafe
-- Dependencies: `serde`, `thiserror`
-- No MIDI I/O — produces note data, not bytes
+fn main() {
+    let ctx = HarmonicContext::new(0, Mode::Major); // C major
+
+    // Build a progression step by step
+    let mut progression = ChordProgression::new(ctx.clone());
+
+    // I → IV → V → I with ternary inputs
+    let steps: Vec<(&str, TernaryVector)> = vec![
+        ("I",   vec![1, 0, 0, 0]),   // Tonic, moving up
+        ("IV",  vec![0, 1, 0, 0]),   // Subdominant, expanding
+        ("V",   vec![0, 0, -1, 0]),  // Dominant, tension
+        ("I",   vec![1, 0, 0, 1]),   // Tonic, resolving
+    ];
+
+    let mapper = TernaryToChord::new(ctx);
+    let cost_fn = CostFunction::default();
+    let rules = CounterpointRules::strict();
+
+    for (roman, ternary) in &steps {
+        let candidates = mapper.generate_candidates(ternary);
+        // Find the best voicing that doesn't violate rules
+        if let Some((best_chord, best_voice)) = rules.best_valid(
+            &candidates,
+            progression.last_voice(),
+        ) {
+            let cost = cost_fn.evaluate(&best_chord, &ctx, ternary);
+            progression.add_step(best_chord, best_voice, ternary.clone(), cost);
+            println!("{}: {} (cost: {:.2})", roman, best_chord, cost);
+        }
+    }
+
+    println!("\nTotal cost: {:.2}", progression.total_cost());
+    println!("Progression:\n{}", progression);
+}
+```
+
+## Tutorial: Ternary-to-Harmony Mapping
+
+The ternary vector maps to harmonic direction:
+- `+1` = move up (tension, departure)
+- `0` = stay (stable, rest)
+- `-1` = move down (resolution, return)
+
+```rust
+use fleet_midi_harmonizer::*;
+use fleet_midi_harmonizer::ternary::TernaryVector;
+
+fn main() {
+    let ctx = HarmonicContext::new(0, Mode::Major);
+    let mapper = TernaryToChord::new(ctx);
+
+    // Different ternary vectors produce different harmonic directions
+    let vectors: Vec<(&str, TernaryVector)> = vec![
+        ("Tension up",    vec![1, 1, 0, 0]),
+        ("Stable",        vec![0, 0, 0, 0]),
+        ("Resolution",    vec![-1, -1, 0, 0]),
+        ("Mixed",         vec![1, -1, 1, -1]),
+    ];
+
+    for (label, vec) in &vectors {
+        let candidates = mapper.generate_candidates(vec);
+        println!("{} {:?} → {} candidates", label, vec, candidates.len());
+    }
+}
+```
+
+## Counterpoint Rules
+
+The `CounterpointRules` module enforces classical four-part writing rules:
+
+| Rule | Violation | Penalty |
+|------|-----------|---------|
+| No parallel fifths | Two voices move in parallel P5 | 10.0 |
+| No parallel octaves | Two voices move in parallel P8 | 10.0 |
+| No voice crossing | Lower voice exceeds upper | 10.0 |
+| Voice range limits | Soprano > A5, Bass < C2 | 5.0 |
+| Maximum spacing | > P8 between adjacent voices | 3.0 |
+
+Rules can be strict (reject violations) or lenient (allow with penalty).
+
+## Voice Ranges
+
+```
+Soprano: C4 (60) ──────── A5 (81)
+Alto:    G3 (55) ──────── D5 (74)
+Tenor:   C3 (48) ──────── A4 (69)
+Bass:    C2 (36) ──────── C4 (60)
+```
+
+## API Reference
+
+### Core Types
+- `Chord` — root note + quality + inversion
+- `ChordQuality` — Major, Minor, Diminished, Augmented, Dominant7, Major7, Minor7, HalfDim7
+- `Voice` — SATB assignment (4 MIDI note numbers)
+- `HarmonicContext` — key + mode for harmonic analysis
+- `TernaryVector` — `Vec<i8>` where values are {-1, 0, +1}
+
+### Key Functions
+- `TernaryToChord::generate_candidates(&vec)` → chord options from ternary input
+- `CostFunction::evaluate(&chord, &ctx, &vec)` → weighted cost score
+- `CounterpointRules::check(&prev, &curr)` → list of violations
+- `ChordProgression::add_step(...)` → extend progression with optimal voicing
+
+## Ecosystem Role
+
+In SuperInstance, `fleet-midi-harmonizer` is the bridge between:
+- **ternary agents** (which output {-1, 0, +1} decisions) and **musical output** (MIDI harmonization)
+- **conservation laws** (energy preservation) and **musical rules** (no parallel fifths)
+- **spreadsheet-engine** cells (which can contain ternary values) and **audible music**
 
 ## License
 
